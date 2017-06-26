@@ -41,6 +41,7 @@ from processing.tools.vector import VectorWriter
 
 from processing.core.GeoAlgorithmExecutionException import GeoAlgorithmExecutionException
 from processing.core.ProcessingLog import ProcessingLog
+from processing.gui.AlgorithmDialog import AlgorithmDialog
 
 import sqlite3 as sqlite
 import os
@@ -52,10 +53,6 @@ from tools.tilingthread import TilingThread
 import os.path as osp
 import sys
 import platform
-
-import PIL.Image
-import base64
-import cStringIO
 
 from pyspatialite import dbapi2 as db
 
@@ -72,6 +69,30 @@ import math
 import operator
 
 currentpath = osp.dirname(sys.modules[__name__].__file__)
+
+class ExportTilesAlgorithmDialog(AlgorithmDialog):
+  def __init__(self, alg):
+    AlgorithmDialog.__init__(self, alg)
+    
+  def closeEvent(self, evnt):
+    # necessary to close the thread before it is finished
+    if self.alg.workThread is not None:
+      self.alg.workThread.stop()
+    else:
+      pass
+    
+    # call original function
+    # on QGIS 1.8.4 I received this error:
+    # "C:/PROGRA~1/QGIS2~1.18/apps/qgis/./python/plugins\processing\gui\AlgorithmDialog.py", line 332, in closeEvent
+    # QgsMapLayerRegistry.instance().layerWasAdded.disconnect(self.mainWidget.layerAdded)
+    # TypeError: 'instancemethod' object is not connected
+    # So I added a try
+    try:
+        super(ExportTilesAlgorithmDialog, self).closeEvent(evnt)
+    except Exception as e:
+        ProcessingLog.addToLog(ProcessingLog.LOG_INFO, 'closeEvent error')
+        ProcessingLog.addToLog(ProcessingLog.LOG_INFO, str(e))
+    
 
 class ExportTilesAlgorithm(GeoAlgorithm):
     """This is an example algorithm that takes a vector layer and
@@ -112,18 +133,25 @@ class ExportTilesAlgorithm(GeoAlgorithm):
         # We add the input vector layer. It can have any kind of geometry
         # It is a mandatory (not optional) one, hence the False argument
         self.addParameter(ParameterExtent(self.EXTENT, self.tr('Set maximum extend')))
-        self.addParameter(ParameterNumber(self.MINZOOM, self.tr('Set minimum scale'), 0))
-        self.addParameter(ParameterNumber(self.MAXZOOM, self.tr('Set maximum scale'),18))
-        self.addParameter(ParameterNumber(self.TILEWIDTH, self.tr('Set tile dimension'),256))
-        self.addParameter(ParameterNumber(self.MAXNUMTILES, self.tr('Max number of tiles to be generated'),10000))
+        self.addParameter(ParameterNumber(self.MINZOOM, self.tr('Set minimum scale'), default=16))
+        self.addParameter(ParameterNumber(self.MAXZOOM, self.tr('Set maximum scale'),default=18))
+        self.addParameter(ParameterNumber(self.TILEWIDTH, self.tr('Set tile dimension'),default=256))
+        self.addParameter(ParameterNumber(self.MAXNUMTILES, self.tr('Max number of tiles to be generated'),default=10000))
         
         # We add a vector layer as output
         self.addOutput(OutputFile(self.OUTFILE,self.tr('Output file'),'mbtiles'))
+        
+        # the thread
+        self.workThread = None
         
     def getIcon(self):
         """We return the default icon.
         """
         return QIcon(osp.join(self.CURRENTPATH,'icons','IOGeopaparazzi.png'))
+        
+    def getCustomParametersDialog(self):
+      self.customDialog = ExportTilesAlgorithmDialog(self)
+      return self.customDialog
         
     def processAlgorithm(self, progress):
       self.progress = progress
@@ -194,7 +222,6 @@ class ExportTilesAlgorithm(GeoAlgorithm):
           writeViewer,
           maxnumtiles
       )
-
       self.workThread.updateProgress.connect(self.updateProgress)
       self.workThread.updateText.connect(self.updateText)
       #self.workThread.start()

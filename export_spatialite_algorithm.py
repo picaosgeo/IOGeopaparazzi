@@ -53,10 +53,6 @@ import os.path as osp
 import sys
 import platform
 
-import PIL.Image
-import base64
-import cStringIO
-
 from pyspatialite import dbapi2 as db
 
 from qgis.core import *
@@ -160,7 +156,11 @@ class ExportSpatialiteAlgorithm(GeoAlgorithm):
             name = layer.name()
             source = layer.dataProvider().dataSourceUri()
             cod = layer.dataProvider().encoding()
-            progress.setText('coding %s' %(cod))
+            if cod == 'System':
+              cod = sys.getdefaultencoding()
+              
+            ProcessingLog.addToLog(ProcessingLog.LOG_INFO, 'layer %s is coded as %s'%(name,cod))
+              
             fullname = source.split("|")[0]
             if fullname == path:
               i +=1.0
@@ -170,12 +170,10 @@ class ExportSpatialiteAlgorithm(GeoAlgorithm):
               # get layer type (point, line, polygon)
               vtype = self.getGeomType(layer).upper()
               forcedVtype = dict[vtype]
-              #ProcessingLog.addToLog(ProcessingLog.LOG_INFO, 'vector type %s' %(vtype))
               # get name and type of fields
               vfields = self.getFieldList(layer)
               # get crs code
               vcrs = layer.crs().postgisSrid()
-              #ProcessingLog.addToLog(ProcessingLog.LOG_INFO, 'vector crs %s' %(vcrs))
               # something like: "crs":{"type":"name","properties":{"name":"EPSG:4326"}}
               vcrsAuthid = '"crs":{"type":"name","properties":{"name":"%s"}}' %(layer.crs().authid())
               # create a new table
@@ -186,7 +184,7 @@ class ExportSpatialiteAlgorithm(GeoAlgorithm):
               sql += "'geom', "+str(vcrs)+", '"+forcedVtype+"', 'XY')"
               cur.execute(sql)
               # populate with geometry and attributes
-              # to improve with selection/ROI
+              # to be improved with selection/ROI
               
               # get field names list
               vfields = self.getFieldNameList(layer)
@@ -199,22 +197,25 @@ class ExportSpatialiteAlgorithm(GeoAlgorithm):
                   progress.setPercentage(int(100*f/nfeat))
                   # retrieve every feature with its geometry and attributes
                   # fetch geometry
-                  #geom = feature.geometry().exportToGeoJSON().upper()
                   geom = feature.geometry().exportToGeoJSON()
                   # split and add crs infos
                   toks = geom.split(',')
                   geom = ",".join([toks[0],vcrsAuthid,",".join(toks[1:])])
-                  # fetch attributes
+                  # fetch attributes and geometry
                   attrs = self.get_feature_attr(feature,cod)
-                  #print 'attrs:',attrs
                   geom = "CastToMulti(GeomFromGeoJSON('"+geom+"'))"
-                  #geom = geom.replace(vtype,forcedVtype)
-                  sql = "INSERT INTO "+name+" ("+vfields+", geom) "
-                  sql += "VALUES ("+attrs+", "+geom+")"
+                  try:
+                    sql = "INSERT INTO "+name+" ("+vfields+", geom) "
+                    sql += "VALUES ("+attrs+", "+geom+")"
+                  except:
+                    progress.setText('Attribute error at %s, see Processing log for more information' %(str(f)))
+                    ProcessingLog.addToLog(ProcessingLog.LOG_INFO, 'Attribute error')
+                    ProcessingLog.addToLog(ProcessingLog.LOG_INFO, attrs)
+                  
                   try:
                     cur.execute(sql)
                   except:
-                    progress.setText('SQL error at %s' %(str(f)))
+                    progress.setText('SQL error at %s, see Processing log for more information' %(str(f)))
                     ProcessingLog.addToLog(ProcessingLog.LOG_INFO, 'SQL error')
                     ProcessingLog.addToLog(ProcessingLog.LOG_INFO, sql)
                   
@@ -291,18 +292,21 @@ class ExportSpatialiteAlgorithm(GeoAlgorithm):
           return ""
 
     def get_feature_attr(self, feature,coding = 'utf-8'):
+      # coding is not actually used but at the moment I leave it
+      # for future improvements
       attrs = feature.attributes()
-      newAttrs = []
+      attrsStr = ''
       for a in attrs:
-        try:
-          a = unicode(a).encode('utf-8').replace("'","").replace('"','')
-        except:
-          # TODO: something of better to manage "strange" character
-          #print a
-          a = '?'*len(a)
+        if type(a) =='unicode':
+          a = a.encode('utf-8')
+          
+        a = '%s'%a
+        a = a.replace("'","''")
+        attrsStr+=a+"', '"
       
-        newAttrs.append(a)
-      
-      attrsStr = "', '".join(map(str,newAttrs))
+      # remove last sequence
+      attrsStr = attrsStr[:-4]
+      # add first and last single quotes
       attrsStr = "'"+attrsStr+"'"
       return attrsStr
+      
